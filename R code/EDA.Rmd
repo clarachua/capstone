@@ -1,0 +1,209 @@
+---
+title: "Exploratory Data Analysis"
+author: "Clara Chua"
+date: "9/29/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+packages = c('tidyverse','rgdal', 'maptools', 'raster','spatstat', 'tmap', 'gridExtra', 'leaflet')
+for (p in packages){
+if(!require(p, character.only = T)){
+install.packages(p)
+}
+library(p,character.only = T)
+}
+```
+
+<i>Work in progress</i>
+
+## Introduction
+This is the exploratory data analysis (EDA) for my capstone project, that looks into the geospatial analysis of airbnb rentals in the Singapore market.  
+
+## Examining the Data
+
+### What Data is Available?
+Inside Airbnb provides information on the following:
+* Listings - Summary information on listings
+* Detailed Listings - Detailed listing information of airbnb for rent
+* Calendar - Detailed calendar data for listings
+* Reviews - Summary review data
+* Detailed Reviews - Detailed review data for listings
+* Neighbourhoods - list of neighbourhoods in the city and a neighbourhood GeoJSON file 
+
+```{r, echo=TRUE, message=FALSE}
+# Loading the Data
+listings <- read_csv("data/listings.csv") %>% as.data.frame()
+d_listings <- read_csv("data/detailedlistings.csv") %>% as.data.frame()
+calendar <- read_csv("data/calendar.csv") %>% as.data.frame()
+reviews <- read_csv("data/reviews.csv") %>% as.data.frame()
+d_reviews <- read_csv("data/detailedreviews.csv") %>% as.data.frame()
+neighbourhoods <- read_csv("data/neighbourhoods.csv") %>% as.data.frame()
+```
+
+```{r, echo=TRUE, message=FALSE}
+# Reviewing the data
+listings
+d_listings
+reviews
+calendar
+d_reviews
+```
+
+```{r, echo=TRUE, message=FALSE}
+# Reviewing the data
+filter(d_listings, require_guest_phone_verification == "TRUE")
+n_distinct(reviews$listing_id)
+length(reviews$listing_id)
+min(reviews$date)
+max(reviews$date)
+```
+#### Missing data
+- Check for missing data, outliers (e.g. Review date < earliest listing date)
+
+
+### Type of Accommodation available
+The following plot shows the types of accommodation available and the average price of each accommodation type by region / neighbourhood.
+
+#### By Region
+Examining the listings by region, we see that unsurprisingly majority of the listings are in the Central Region, with more entire apartments for rent.  Interestingly, there are more listings of private rooms than entire apartments in the other regions.  We could surmise that these non-central region listings are possibly owner-occupied homes, who are renting out a spare room for additional income.  
+```{r, echo=TRUE, message=FALSE}
+# Plotting the type of accommodation and average price of accommodation by region / neighbourhood
+regionlist <- listings %>%
+                group_by(neighbourhood_group, room_type) %>%
+                summarise(
+                  num_listings = n(),
+                  avg_price = mean(price),
+                  med_price = median(price))
+                # arrange(desc(avg_price))
+regionlist
+```
+```{r, echo=TRUE, message=FALSE}
+# Plotting the type of accommodation and average price of accommodation by region / neighbourhood
+base_p <- ggplot(regionlist, aes(x=room_type, fill = room_type)) + theme(axis.text.x = element_blank())
+p1 <- base_p + 
+      geom_col(aes(y=num_listings)) +
+      facet_grid(cols=vars(neighbourhood_group))
+p2 <- base_p + geom_col(aes(y=med_price, color = room_type)) +
+      facet_grid(cols=vars(neighbourhood_group))
+# p2 <- ggplot(regionlist, aes(room_type, num_listings, fill = room_type)) +
+#   geom_col() +
+#   facet_grid(cols = vars(neighbourhood_group)) +
+#   geom_jitter(aes(room_type, avg_price))
+grid.arrange(p1, p2, ncol = 1)
+
+```
+
+
+#### Violin plot of prices
+The violin plot shows that there are possibly outliers with bad data that we will need to exclude (e.g. $10,000 rental for an entire home/apt for a day)
+```{r, echo=TRUE, message=FALSE}
+# Do a violin plot of the prices of the various listings in each region?
+ggplot(listings, aes(room_type, price, color=room_type))+ 
+          geom_violin() +
+          facet_grid(cols = vars(neighbourhood_group))+
+          theme(axis.text.x = element_blank())
+```
+
+
+#### By Neighbourhood
+
+```{r, echo=TRUE, message=FALSE}
+# Plotting the type of accommodation and average price of accommodation by region / neighbourhood
+nhoodlist <- listings %>%
+                group_by(neighbourhood, room_type) %>%
+                  summarise(
+                    num_listings = n(),
+                    avg_price = mean(price),
+                    med_price = median(price)) %>%
+                arrange(desc(num_listings))
+nhoodlist
+```
+The neighbourhood list shows some outlier where there is an entire home / apartment's rental in Tuas (not a central neighbourhood) is $10,001 per night.  As there is only 1 listing, we may wish to ignore this altogether.  We can also see that the neighbourhood with the most number of listings is Geylang and Kallang, which are adjacent areas.  This can be seen more clearly in the map of listings.
+
+#### Remove this section
+```{r, echo=TRUE, message=FALSE}
+# Plotting the neighbourhood listings on a map
+
+# reading in the neighbourhood geojson file
+nhood_map <- readOGR(dsn = "neighbourhoods.geojson", layer="neighbourhoods")
+plot(nhood_map)
+```
+#### Visualising neighbourhoods on leaflet (TO REMAP ON TMAPS)
+
+```{r, echo=TRUE, message=FALSE}
+# Plotting neighbourhood listings on leaflet
+pal <- colorFactor(c("blue", "red", "green"), domain = c("Entire home/apt", "Shared room", "Private room"))
+listings_df <- as.data.frame(listings)
+
+basemap <- leaflet(listings_df) %>% 
+  addProviderTiles(providers$CartoDB) %>% 
+  setView(lat =1.290270, lng = 103.851959, zoom = 11) %>%
+  addCircleMarkers(~longitude, ~latitude, 
+                   radius = 1, 
+                   color = ~pal(room_type)) #%>%
+  #addPolygons(weight = 1, opacity = 0.5, smoothFactor = 0.3, fill = FALSE,
+  #            label = ~paste0(neighbourhood))
+
+# Attempting to add polygons via addGeoJSON function
+#library(leaflet.extras)
+# basemap <- leaflet() %>% 
+#   addProviderTiles(providers$CartoDB) %>% 
+#   setView(lat =1.290270, lng = 103.851959, zoom = 11) %>%
+#   addGeoJSON(nhood_map, weight = 1, color = "black", fill = TRUE)
+
+basemap
+```
+
+
+### Hosts & Listings
+This section for EDA on hosts
+- Number of hosts and number of listings
+- Time series of host join dates?
+- Time series of listing dates (difference between yearly data)
+```{r, echo=TRUE, message=FALSE}
+list_byhost <- listings_df %>%
+                group_by(host_id, host_name) %>%
+                count(name = "number_of_listings", sort = TRUE) %>%
+                #arrange(desc(num)) %>%
+                ungroup()
+  
+list_byhost %>% group_by(number_of_listings) %>% count(name = "number_of_hosts")
+```
+
+#### Notes
+New Hosts in 2020
+There were 149 new hosts in 2020
+- Additional work: To download archival information to extract the new listings added per year (or time period)
+```{r, echo=TRUE, message=FALSE}
+# Are these new listings?  Proxy - when did the hosts sign up?
+no_reviews_host <- left_join(no_reviews, d_listings, by = "id")
+nrow(filter(no_reviews_host, host_since < "2020-01-01"))
+nrow(filter(no_reviews_host, host_since >= "2020-01-01"))
+# max(no_reviews_host$host_since)
+```
+
+
+### Reviews
+This section for EDA on reviews
+##### Inactive Listings (listings with no reviews)
+``` {r}
+# How many listings do not have reviews (i.e. no stays)
+no_reviews <- filter(listings, is.na(last_review))
+# listings[[is.na(listings$last_review)]]
+nrow(no_reviews)
+no_reviews
+```
+There are 2,835 listings without reviews.  We can look into them to see where they are located and the room type and other factors to see if there are things that could contribute to why they have no reviews / not been rented out.
+
+##### Additional review data to do
+- Average/Median # reviews per listing
+- Listings with highest number of reviews
+- Look at review scores, number of reviews, host_verification, etc from detailed review data (correlation, etc)
+
+#### Data preparation
+- any additional preparation (e.g. removing outliers, etc)
