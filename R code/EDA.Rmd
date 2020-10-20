@@ -1,0 +1,471 @@
+---
+title: "Exploratory Data Analysis"
+author: "Clara Chua"
+date: "9/29/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=TRUE, eval=TRUE, message=FALSE, warning=FALSE}
+packages = c('tidyverse','rgdal', 'maptools', 'sf','raster','spatstat', 'tmap', 'gridExtra', 'leaflet')
+for (p in packages){
+if(!require(p, character.only = T)){
+install.packages(p)
+}
+library(p,character.only = T)
+}
+```
+
+<i>Work in progress</i>
+
+## Introduction
+This is the exploratory data analysis (EDA) for my capstone project, that looks into the geospatial analysis of airbnb rentals in the Singapore market.  
+
+## Examining the Data
+
+### What Data is Available?
+Inside Airbnb provides information on the following:
+* Listings - Summary information on listings
+* Detailed Listings - Detailed listing information of airbnb for rent
+* Calendar - Detailed calendar data for listings
+* Reviews - Summary review data
+* Detailed Reviews - Detailed review data for listings
+* Neighbourhoods - list of neighbourhoods in the city and a neighbourhood GeoJSON file 
+
+```{r, echo=TRUE, message=FALSE}
+# Loading the Data
+listings <- read_csv("../data/listings.csv") %>% as.data.frame()
+d_listings <- read_csv("../data/detailedlistings.csv") %>% as.data.frame()
+calendar <- read_csv("../data/calendar.csv") %>% as.data.frame()
+reviews <- read_csv("../data/reviews.csv") %>% as.data.frame()
+d_reviews <- read_csv("../data/detailedreviews.csv") %>% as.data.frame()
+neighbourhoods <- read_csv("../data/neighbourhoods.csv") %>% as.data.frame()
+```
+
+```{r, echo=TRUE, message=FALSE}
+# Reviewing the data
+listings
+d_listings
+reviews
+calendar
+d_reviews
+```
+
+```{r, echo=TRUE, message=FALSE}
+# Reviewing the data
+filter(d_listings, require_guest_phone_verification == "TRUE")
+n_distinct(reviews$listing_id)
+length(reviews$listing_id)
+min(reviews$date)
+max(reviews$date)
+```
+#### Missing data
+- Check for missing data, outliers (e.g. Review date < earliest listing date)
+```{r, echo=TRUE, message=FALSE}
+d_listings %>% summarise_all(funs(sum(is.na(.))))
+d_reviews %>% summarise_all(funs(sum(is.na(.))))
+listings %>% summarise_all(funs(sum(is.na(.))))
+calendar %>% summarise_all(funs(sum(is.na(.))))
+reviews %>% summarise_all(funs(sum(is.na(.))))
+```
+There are missing comments in the review column. 
+There are also listings without reviews
+
+
+```{r, echo=TRUE, message=FALSE} 
+# Filter the missing data to see what to do with it
+missing_list <- listings %>% 
+                filter(is.na(listings$host_name))
+missing_list
+
+```
+
+
+
+### Type of Accommodation available
+The following plot shows the types of accommodation available and the average price of each accommodation type by region / neighbourhood.
+
+#### By Region
+Examining the listings by region, we see that unsurprisingly majority of the listings are in the Central Region, with more entire apartments for rent.  Interestingly, there are more listings of private rooms than entire apartments in the other regions.  We could surmise that these non-central region listings are possibly owner-occupied homes, who are renting out a spare room for additional income.  
+```{r, echo=TRUE, message=FALSE}
+# Plotting the type of accommodation and average price of accommodation by region / neighbourhood
+regionlist <- listings %>%
+                group_by(neighbourhood_group, room_type) %>%
+                summarise(
+                  num_listings = n(),
+                  avg_price = mean(price),
+                  med_price = median(price))
+                # arrange(desc(avg_price))
+regionlist
+```
+```{r, echo=TRUE, message=FALSE}
+# Plotting the type of accommodation and average price of accommodation by region / neighbourhood
+base_p <- ggplot(regionlist, aes(x=room_type, fill = room_type)) + theme(axis.text.x = element_blank())
+p1 <- base_p + 
+      geom_col(aes(y=num_listings)) +
+      facet_grid(cols=vars(neighbourhood_group))
+p2 <- base_p + geom_col(aes(y=med_price, color = room_type)) +
+      facet_grid(cols=vars(neighbourhood_group))
+# p2 <- ggplot(regionlist, aes(room_type, num_listings, fill = room_type)) +
+#   geom_col() +
+#   facet_grid(cols = vars(neighbourhood_group)) +
+#   geom_jitter(aes(room_type, avg_price))
+grid.arrange(p1, p2, ncol = 1)
+
+```
+
+
+#### Violin plot of prices
+The violin plot shows that there are possibly outliers with bad data that we will need to exclude (e.g. $10,000 rental for an entire home/apt for a day)
+```{r, echo=TRUE, message=FALSE}
+# Do a violin plot of the prices of the various listings in each region?
+ggplot(listings, aes(room_type, price, color=room_type))+ 
+          geom_violin() +
+          facet_grid(cols = vars(neighbourhood_group))+
+          theme(axis.text.x = element_blank())
+```
+
+
+#### By Neighbourhood
+
+```{r, echo=TRUE, message=FALSE}
+# Plotting the type of accommodation and average price of accommodation by region / neighbourhood
+nhoodlist <- listings %>%
+                group_by(neighbourhood, room_type) %>%
+                  summarise(
+                    num_listings = n(),
+                    avg_price = mean(price),
+                    med_price = median(price)) %>%
+                arrange(desc(med_price))
+nhoodlist
+```
+The neighbourhood list shows some outlier where there is an entire home / apartment's rental in Tuas (not a central neighbourhood) is $10,001 per night.  As there is only 1 listing, we may wish to ignore this altogether.  We can also see that the neighbourhood with the most number of listings is Geylang and Kallang, which are adjacent areas.  This can be seen more clearly in the map of listings.
+
+#### Read in neighbourhood maps / polygons
+```{r, echo=TRUE, message=FALSE}
+# reading in the neighbourhood geojson file
+nhood_map <- readOGR(dsn = "../data/neighbourhoods.geojson", layer="neighbourhoods")
+nhood_map2 <- st_read(dsn = "../data/neighbourhoods.geojson", layer="neighbourhoods")
+nhood_map2
+#plot(nhood_map)
+```
+#### Looking for outliers
+The following code snippet is to clean data (currency to numeric) from the detailed listings and look for outliers
+```{r, echo = TRUE, message = TRUE}
+# Remove $ and , symbol in columns where currency is read as character.
+strip_dollars = function(x) {as.numeric(gsub("[\\$,]", "", x))}
+d_listings[,61:65] <- sapply(d_listings[,61:65], strip_dollars)
+d_listings[,67] <- sapply(d_listings[,67], strip_dollars)
+d_listings
+
+#Checking out detailed listings with daily stay of > $2,000
+outliers <- d_listings %>%
+              filter(d_listings$price > 2000)
+outliers
+
+#Remove outliers from listings
+nhoodlist_clean <- listings %>%
+                    filter(listings$price < 2000) %>%
+                    group_by(neighbourhood, room_type) %>%
+                    summarise(
+                      num_listings = n(),
+                      avg_price = mean(price),
+                      med_price = median(price)) %>%
+                    arrange(desc(med_price))
+
+```
+
+
+
+
+### Hosts & Listings
+This section for EDA on hosts
+- Number of hosts and number of listings
+- Time series of host join dates?
+- Time series of listing dates (difference between yearly data)
+```{r, echo=TRUE, message=FALSE}
+list_byhost <- listings %>%
+                group_by(host_id, host_name) %>%
+                count(name = "number_of_listings", sort = TRUE) %>%
+                #arrange(desc(num)) %>%
+                ungroup()
+  
+list_byhost %>% group_by(number_of_listings) %>% count(name = "number_of_hosts")
+```
+
+
+### Reviews
+This section for EDA on reviews
+##### Inactive Listings (listings with no reviews)
+``` {r}
+# How many listings do not have reviews (i.e. no stays)
+no_reviews <- filter(listings, is.na(last_review))
+# listings[[is.na(listings$last_review)]]
+nrow(no_reviews)
+no_reviews
+```
+There are 2,835 listings without reviews.  We can look into them to see where they are located and the room type and other factors to see if there are things that could contribute to why they have no reviews / not been rented out.
+
+#### Notes
+New Hosts in 2020
+There were 149 new hosts in 2020
+- Additional work: To download archival information to extract the new listings added per year (or time period)
+```{r, echo=TRUE, message=FALSE}
+# Are these new listings?  Proxy - when did the hosts sign up?
+no_reviews_host <- left_join(no_reviews, d_listings, by = "id")
+nrow(filter(no_reviews_host, host_since < "2020-01-01"))
+nrow(filter(no_reviews_host, host_since >= "2020-01-01"))
+# max(no_reviews_host$host_since)
+```
+
+##### Additional review data to do
+- Average/Median # reviews per listing
+- Listings with highest number of reviews
+- Look at review scores, number of reviews, host_verification, etc from detailed review data (correlation, etc)
+
+#### Data preparation
+- any additional preparation (e.g. removing outliers, etc)
+
+
+## Spatial EDA
+
+
+#### Visualising neighbourhoods on tmap
+```{r, echo=TRUE, message=FALSE}
+# Plotting neighbourhood listings on tmap
+pal <- colorFactor(c("blue", "red", "green"), domain = c("Entire home/apt", "Shared room", "Private room"))
+
+#tmap mode
+tmap_mode("view")
+
+listings_sf <- listings %>% 
+                filter(listings$price < 2000) %>%
+                st_as_sf(.,
+  # st_as_sf(x = listings,
+                        coords = c("longitude", "latitude"),
+                        crs = "+proj=longlat +datum=WGS84 +ellps=WGS84 +towgs84=0,0,0")
+
+# Join neighbourhood mapping and dataframe
+# Is this necessary?
+listings_join <- left_join(nhood_map2, listings, by = c("neighbourhood"))
+
+#Plotting points
+tm_basemap(leaflet::providers$OpenStreetMap) +
+tm_shape(nhood_map2) +
+  tm_polygons(alpha = 0.2) +
+  tm_shape(listings_sf) +
+  tm_bubbles(col = "room_type", size = 0.02)
+  # tm_dots() +
+  # tm_shape(nhood_map2)
+```
+The listings are clearly clustered around the central regin of Singapore, close to the CBD and main shopping districts.  There are also listings in suburban parts of Singapore which, while less expected could be explained by either being closer to 'desirable' neighbourhoods such as East Coast, or closer to specific industrial areas such as Pioneer, Sembawang, Changi Business Park / Loyang.    
+
+#### Mapping median price, average price and number of listings
+``` {r, echo= TRUE, message = FALSE}
+# Join neighbourhood mapping and num listings and price dataframe
+listings_join2 <- left_join(nhood_map2, nhoodlist_clean, by = c("neighbourhood"))
+
+tmap_mode("view")
+# REDO THIS ONE
+# Show med price, ave price and num listings in a map layout
+base <- tm_basemap(leaflet::providers$OpenStreetMap)
+map1 <- base + tm_shape(listings_join2) + 
+  tm_polygons("med_price")
+# map2 <- base + tm_shape(listings_join2) + 
+  # tm_polygons("avg_price", alpha = 0.2)
+map3 <- base + tm_shape(listings_join2) + 
+  tm_polygons("num_listings", palette = "Purples", alpha = 0.4)
+tmap_arrange(map1, map3)
+  # tm_fill("num_listings") + 
+  # tm_fill("med_price")
+```
+From the maps above, we can also see that there are neighbourhoods without any data.  If we examine these closer, we can see that these are purely industrial zoned areas, without any residential zones (e.g. Jurong Island, Tuas, Western Islands, Lim Chu Kang, Seletar, Changi).  The neighbourhood designated as "Paya Lebar" encloses the airbase, and not what most people would recongise as Paya Lebar.  
+
+### Spatial Point Pattern Analysis (SPPA)
+
+
+#### Data Wrangling for SPPA
+The following code translate the data that we have into the formats required for SPPA using the spatstat package.  The listings dataframe needs to be converted from lat-long to SVY21 format to be able to put the coordinates together.  It then needs to be converted to a SpatialPoints object for use in Spatstat.  
+The polygon layer also needs to have the right projection (3414) and be converted to a SpatialPolygons object.  
+
+Once done, we can then convert them into ppp and owin formats for spatstat to compute the density.  
+``` {r, echo = TRUE, message = FALSE}
+# listings to be converted from the listings_sf dataframe, to SVY21 format (otherwise it will be out of bounds when using Spatstat) and converting to SpatialPoints (sp)
+# Polygon layer was previously imported as nhood_map, to add a projection and convert to SpatialPolygons 
+
+listings_sf <- st_transform(listings_sf, 3414)
+listings_sp <- st_coordinates(listings_sf) %>% #as.data.frame() %>%
+                #dplyr::rename(longitude = X, latitude = Y) %>% 
+                SpatialPoints(., proj4string = CRS("+init=epsg:3414")) 
+nhood_sp <- spTransform(nhood_map, CRS("+init=epsg:3414")) %>%
+            as(., "SpatialPolygons")
+summary(listings_sp)
+summary(nhood_sp)
+plot(listings_sp)
+plot(nhood_sp)
+
+# Converting sp format to ppp format to be used in spatstat
+listings_ppp <- as.ppp(listings_sp)
+nhood_owin <- as(nhood_sp, "owin")
+plot(nhood_owin)
+summary(listings_ppp)
+```
+Here we create jittering and combine the listings and neighbourhoods to feed into point pattern analysis.  
+
+``` {r echo = TRUE, eval = TRUE}
+# create jittering
+listing_ppp_jit <- rjitter(listings_ppp, retry = TRUE, nsim = 1, drop = TRUE)
+plot(listing_ppp_jit)
+summary(listing_ppp_jit)
+summary(nhood_owin)
+
+
+# Using subzone mapping instead to test (will remove later)
+
+# subzone <- readOGR(dsn = "../data", layer="MP14_SUBZONE_WEB_PL")
+# crs(subzone)
+# sg_sp <- as(subzone, "SpatialPolygons")
+# plot(sg_sp)
+# summary(sg_sp)
+# sg_owin <- as(sg_sp, "owin")
+# plot(sg_owin)
+# summary(sg_owin)
+# listingsSG_ppp = listing_ppp_jit[sg_owin]
+# plot(listingsSG_ppp)
+# summary(listingsSG_ppp)
+
+
+# Combining listings and the neighbourhoods
+listingsg_ppp = listing_ppp_jit[nhood_owin]
+plot(listingsg_ppp)
+# summary(listingsg_ppp)
+# listingsg_ppp.km <- rescale(listingsg_ppp, 1000, "km")
+# kde_listings_bw <- density(listingsg_ppp.km)
+
+```
+
+#### Quadrat Analysis
+
+For the overall listings for SG, we can run the quadrat test to see if there 
+
+
+```{r, echo=TRUE, message=FALSE}
+qtest <- quadrat.test(listingsg_ppp, 
+                   nx = 20, ny = 15)
+qtest
+
+plot(listingsg_ppp)
+plot(qtest, add = TRUE, cex =.1)
+```
+
+Conditional Monte Carlo test of CSR using quadrat counts
+```{r, echo=TRUE, message=FALSE}
+qtest_MC <- quadrat.test(listingsg_ppp, 
+                   nx = 20, ny = 15,
+                   method="M",
+                   nsim = 999)
+qtest_MC
+```
+
+#### Kernel Density Estimation
+Plotting the KDE plots
+```{r, echo=TRUE, message=FALSE}
+# Rescaling ppp to m instead of km and plotting the kernel density estimation
+listingsg_ppp.km <- rescale(listingsg_ppp, 1000, "km")
+kde_listings_bw <- density(listingsg_ppp, sigma=bw.diggle, edge = TRUE, kernel = "gaussian")
+plot(kde_listings_bw)
+kde_listings_bw_km <- density(listingsg_ppp.km, sigma=bw.diggle, edge = TRUE, kernel="gaussian")
+plot(kde_listings_bw_km)
+```
+As we can see from above, a higher density of listings are within the city centre and we can take a closer look at those areas.  (Need to identify - map?)
+
+#### Using Adaptive Bandwidth
+```{r, echo=TRUE, message=FALSE}
+kde_listings_adaptive <- adaptive.density(listingsg_ppp, method = "kernel")
+kde_listings_adaptive2 <- adaptive.density(listingsg_ppp.km, method = "kernel")
+plot(kde_listings_adaptive2)
+```
+
+#### Mapping KDE onto map to identify areas for further investigation
+``` {r, echo=TRUE, message = FALSE}
+gridded_kde_listings_bw <- as.SpatialGridDataFrame.im(kde_listings_bw)
+gridded_kde_listings_adapt <- as.SpatialGridDataFrame.im(kde_listings_adaptive)
+spplot(gridded_kde_listings_bw)
+spplot(gridded_kde_listings_adapt)
+kde_listings_bw_raster <- raster(gridded_kde_listings_bw)
+kde_listings_adap_raster <- raster(gridded_kde_listings_adapt)
+projection(kde_listings_bw_raster) <- CRS("+init=EPSG:3414")
+projection(kde_listings_adap_raster) <- CRS("+init=EPSG:3414")
+kde_listings_bw_raster
+kde_listings_adap_raster
+```
+
+
+```{r, echo=TRUE, message=FALSE}
+tm_basemap(leaflet::providers$OpenStreetMap) +
+  tm_shape(nhood_map2) +
+  tm_polygons(alpha = 0.1) +
+tm_shape(kde_listings_bw_raster) + 
+  tm_raster("v") +
+  tm_layout(legend.position = c("right", "bottom"), frame = FALSE)
+```
+From the raster map (using the bw.diggle function), we can see that the following neighbourhoods have higher than normal density
+Novena, Kallang, Geylang, Rochor, River Valley, Outram / Bukit Merah (fringe), Downtown Core
+
+```{r echo=TRUE, eval=TRUE}
+# tm_basemap(leaflet::providers$OpenStreetMap) +
+  tm_shape(nhood_map2) +
+  tm_polygons(alpha = 0.1) +
+tm_shape(kde_listings_adap_raster) + 
+  tm_raster("v") +
+  tm_layout(legend.position = c("right", "bottom"), frame = FALSE)
+```
+The adaptive raster gives a few more areas to investigate as well: Orchard, Singapore River.
+
+
+#### Clark and Evans Test for all listings
+```{r, echo=TRUE, message=FALSE}
+# 999 simulations take too long.  Only do CE test on smaller polygons
+# clarkevans.test(listingsg_ppp.km,
+#                 correction="none",
+#                 clipregion=NULL,
+#                 alternative=c("two.sided"),
+#                 nsim=99)
+```
+
+##### Using different fixed kernel sizes (do we need to?) 
+Density mapping using different fixed kernel sizes or 500m, and 750m.  
+
+```{r echo=TRUE, eval=TRUE}
+# kde_childcareSG_600 <- density(childcareSG_ppp.km, sigma=0.6, edge=TRUE, kernel="gaussian")
+# plot(kde_childcareSG_600)
+
+kde_listings_500 <- density(listingsg_ppp.km, sigma=0.5, edge=TRUE, kernel="gaussian") 
+plot(kde_listings_500)
+
+kde_listings_750 <- density(listingsg_ppp.km, sigma=0.75, edge=TRUE, kernel="gaussian") 
+plot(kde_listings_750)
+```
+
+
+#### Subsetting into all polygons (except polygons with missing values)
+This section is for writing the function to subset all polygons and perform KDE for polygons with listings
+```{r, echo=TRUE, message=FALSE}
+
+```
+
+
+```{r, echo=TRUE, message=FALSE}
+# code
+```
+
+```{r, echo=TRUE, message=FALSE}
+# code
+```
+
+```{r, echo=TRUE, message=FALSE}
+# code
+```
