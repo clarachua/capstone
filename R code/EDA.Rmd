@@ -257,11 +257,13 @@ tm_basemap(leaflet::providers$OpenStreetMap) +
 tm_shape(nhood_map2) +
   tm_polygons(alpha = 0.2) +
   tm_shape(listings_sf) +
-  tm_bubbles(col = "room_type", size = 0.02)
+  tm_dots(col = "room_type")
   # tm_dots() +
   # tm_shape(nhood_map2)
 ```
 The listings are clearly clustered around the central regin of Singapore, close to the CBD and main shopping districts.  There are also listings in suburban parts of Singapore which, while less expected could be explained by either being closer to 'desirable' neighbourhoods such as East Coast, or closer to specific industrial areas such as Pioneer, Sembawang, Changi Business Park / Loyang.    
+
+Check out the things in the cachement areas - should not be correct.  
 
 #### Mapping median price, average price and number of listings
 ``` {r, echo= TRUE, message = FALSE}
@@ -380,7 +382,7 @@ plot(kde_listings_bw)
 kde_listings_bw_km <- density(listingsg_ppp.km, sigma=bw.diggle, edge = TRUE, kernel="gaussian")
 plot(kde_listings_bw_km)
 ```
-As we can see from above, a higher density of listings are within the city centre and we can take a closer look at those areas.  (Need to identify - map?)
+As we can see from above, a higher density of listings are within the city centre and we can take a closer look at those areas.
 
 #### Using Adaptive Bandwidth
 ```{r, echo=TRUE, message=FALSE}
@@ -450,6 +452,23 @@ kde_listings_750 <- density(listingsg_ppp.km, sigma=0.75, edge=TRUE, kernel="gau
 plot(kde_listings_750)
 ```
 
+##### Notes from meeting 21/10/2020
+What is the advantage of 1 over the other one (adaptive kernel density may be more useful than the fixed kernel density) - both also have its reasons to use by using fixed kernel - help us to get some good insights also. Depends on what we're trying to catch.  
+
+Covariate - slightly different.  Cross function - to see that if we look at 3 types of listing (room type) - cross functions, those listed whole unit same as those who listed the partial unit.  
+Point events - listing of whole unit - co-exist together or located at different locations
+
+Another way to look at the cross - whether this listing - are they near to existing hotels or hostels (formal accommodation)
+
+Point process - one with locations of all hotels vs listings - do they locate together or not.
+Cross function - do they co-exist.  Look at all airbnb listing - but look at subset of them.  Airbnb listing - vs existing hotel or location of tourist attraction or proximity to public transport (MRT stations) - investigate the patterns.  
+
+Logical ones - for tourists - taking bus is v unlikely but taking MRT will be easy.  Proximity to large shopping malls, proximity to tourist attractions.  
+
+Don't exclude the other listings. 
+Do kde for different room types, and look at distribution of rental prices - lower 25, middle 50 and top 25 percent, can see different spatial point patterns - can be viewed as kernel density map.  Where are the less expensive listings distributed around, and where are the more expensive types.  
+
+Once we cut out 2nd order - still apply kernel density to show the localised density maps.  When you do the 2nd order, can more specifically describe where they tend to cluster to compute the KDE map in the small area.  
 
 #### Subsetting into all polygons (except polygons with missing values)
 This section is for writing the function to subset all polygons and perform KDE for polygons with listings
